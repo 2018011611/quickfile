@@ -1,4 +1,4 @@
-name: Build quickfile .run package
+name: Build quickfile .run Package
 
 on:
   push:
@@ -9,31 +9,52 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
+      # 1. 拉取 quickfile 源码
       - name: Checkout quickfile
         uses: actions/checkout@v4
         with:
           path: quickfile
 
-      - name: Checkout CloudRunFilesBuilder
-        uses: actions/checkout@v4
-        with:
-          repository: 2018011611/CloudRunFilesBuilder
-          path: builder
-
-      - name: Prepare files to package
+      # 2. 安装 makeself（打包工具）
+      - name: Install makeself
         run: |
-          # 把 quickfile 里的 luci-app-quickfile 目录复制到 builder 的 files 目录
-          mkdir -p builder/files
-          cp -r quickfile/luci-app-quickfile/* builder/files/
+          sudo apt update
+          sudo apt install -y makeself
 
-      - name: Build .run package
-        working-directory: builder
+      # 3. 准备打包目录（把 luci-app-quickfile 复制出来）
+      - name: Prepare package files
         run: |
-          # 运行构建脚本（如果你的 builder 有 build.sh）
-          ./build.sh --name quickfile --output quickfile.run
+          mkdir -p package_root/luci-app-quickfile
+          cp -r quickfile/luci-app-quickfile/* package_root/luci-app-quickfile/
 
-      - name: Upload artifact
+          # 写一个安装脚本，解压后自动安装到 iStoreOS/OpenWrt
+          cat > package_root/install.sh << 'EOF'
+#!/bin/sh
+echo "Installing quickfile..."
+cp -r luci-app-quickfile/* /
+echo "Installation complete. Please restart LuCI to take effect."
+EOF
+          chmod +x package_root/install.sh
+
+      # 4. 用 makeself 打包成自解压 .run 文件
+      - name: Build self-extracting .run package
+        run: |
+          makeself package_root quickfile.run "quickfile for iStoreOS" ./install.sh
+          chmod +x quickfile.run
+
+      # 5. 上传构建产物，方便下载
+      - name: Upload quickfile.run
         uses: actions/upload-artifact@v4
         with:
-          name: quickfile-run-package
-          path: builder/quickfile.run
+          name: quickfile.run
+          path: quickfile.run
+
+      # 6. 可选：自动发布到 Release
+      - name: Create Release
+        if: github.ref == 'refs/heads/main'
+        uses: softprops/action-gh-release@v1
+        with:
+          files: quickfile.run
+          tag_name: quickfile-${{ github.sha }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
