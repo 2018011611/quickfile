@@ -1,0 +1,39 @@
+name: Build quickfile .run package
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch: # 支持手动触发构建
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout quickfile
+        uses: actions/checkout@v4
+        with:
+          path: quickfile
+
+      - name: Checkout CloudRunFilesBuilder
+        uses: actions/checkout@v4
+        with:
+          repository: 2018011611/CloudRunFilesBuilder
+          path: builder
+
+      - name: Prepare files to package
+        run: |
+          # 把 quickfile 里的 luci-app-quickfile 目录复制到 builder 的 files 目录
+          mkdir -p builder/files
+          cp -r quickfile/luci-app-quickfile/* builder/files/
+
+      - name: Build .run package
+        working-directory: builder
+        run: |
+          # 运行构建脚本（如果你的 builder 有 build.sh）
+          ./build.sh --name quickfile --output quickfile.run
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: quickfile-run-package
+          path: builder/quickfile.run
