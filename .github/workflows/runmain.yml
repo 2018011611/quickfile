@@ -23,13 +23,10 @@ jobs:
         run: |
           mkdir -p package_root/luci-app-quickfile
           cp -r quickfile/luci-app-quickfile/* package_root/luci-app-quickfile/
-
-          cat > package_root/install.sh << 'EOF'
-#!/bin/sh
-echo "Installing quickfile..."
-cp -r luci-app-quickfile/* /
-echo "Installation complete. Please restart LuCI to take effect."
-EOF
+          echo '#!/bin/sh' > package_root/install.sh
+          echo 'echo "Installing quickfile..."' >> package_root/install.sh
+          echo 'cp -r luci-app-quickfile/* /' >> package_root/install.sh
+          echo 'echo "Installation complete."' >> package_root/install.sh
           chmod +x package_root/install.sh
 
       - name: Build self-extracting .run package
@@ -42,12 +39,3 @@ EOF
         with:
           name: quickfile.run
           path: quickfile.run
-
-      - name: Create Release
-        if: github.ref == 'refs/heads/main'
-        uses: softprops/action-gh-release@v1
-        with:
-          files: quickfile.run
-          tag_name: quickfile-${{ github.sha }}
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
