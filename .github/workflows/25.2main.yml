@@ -1,0 +1,200 @@
+name: Build quickfile & Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      prerelease:
+        description: 是否标记为预发布版
+        type: boolean
+        default: true
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  build:
+    name: ${{ matrix.arch }} · SDK 25.12
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        arch:
+          - aarch64_cortex-a53
+          - aarch64_generic
+          - x86_64
+
+    steps:
+      - uses: actions/checkout@v4          # 官方最新版本为 v4
+
+      - name: Build packages
+        uses: openwrt/gh-action-sdk@main
+        env:
+          ARCH: ${{ matrix.arch }}-openwrt-25.12   # 固定 SDK 版本
+          FEEDNAME: quickfile
+          PACKAGES: quickfile luci-app-quickfile luci-i18n-quickfile-zh-cn
+          NO_REFRESH_CHECK: true
+          INDEX: 1
+
+      - name: Collect APK packages
+        run: |
+          BUILD_ARCH="${{ matrix.arch }}-openwrt-25.12"   # 实际构建输出目录
+          mkdir -p dist/release dist/feed
+
+          # 收集 APK 包，过滤索引文件
+          for f in bin/packages/${BUILD_ARCH}/quickfile/*.apk; do
+            [ -f "$f" ] || continue
+            [[ "$(basename $f)" == APKINDEX* ]] && continue
+            # 直接复制，保持原始包名（包名已包含架构信息，如 quickfile_1.0_aarch64_cortex-a53.apk）
+            cp -v "$f" dist/release/
+            cp -v "$f" dist/feed/
+          done
+
+          # 仅保留 APK 索引
+          for f in bin/packages/${BUILD_ARCH}/quickfile/APKINDEX*; do
+            [ -f "$f" ] || continue
+            cp -v "$f" dist/feed/
+          done
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4       # v4 为当前最新
+        with:
+          name: packages-sdk25.12-${{ matrix.arch }}
+          path: dist/
+          if-no-files-found: ignore
+
+  release:
+    name: Create Release
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: all-artifacts
+          pattern: packages-*          # 匹配所有 SDK 构建产物（当前仅有 25.12）
+
+      - name: Flatten release files
+        run: |
+          mkdir -p dist
+          find all-artifacts -path "*/release/*" -type f -exec cp -v {} dist/ \;
+
+      - name: Determine release tag & status
+        id: meta
+        run: |
+          if [[ "${{ github.event_name }}" == "push" ]]; then
+            TAG="${{ github.ref_name }}"
+            PRERELEASE="false"
+          else
+            TAG="v$(date -u +%Y.%m.%d)"
+            PRERELEASE="${{ github.event.inputs.prerelease }}"
+          fi
+          echo "tag=${TAG}" >> $GITHUB_OUTPUT
+          echo "prerelease=${PRERELEASE}" >> $GITHUB_OUTPUT
+
+      - name: Generate Release Notes
+        env:
+          TAG: ${{ steps.meta.outputs.tag }}
+          REPO: ${{ github.repository }}
+        run: |
+          BASE="https://github.com/${REPO}/releases/download/${TAG}"
+          ARCHS="aarch64_cortex-a53 aarch64_generic x86_64"
+
+          PREVIOUS_TAG="$(git tag --sort=-creatordate | grep '^v' | grep -v "^${TAG}$" | head -1 || true)"
+          if [ -n "$PREVIOUS_TAG" ]; then
+            RANGE="${PREVIOUS_TAG}..HEAD"
+          else
+            RANGE="HEAD"
+          fi
+          git log --format='%s%x1f%b%x1e' "$RANGE" > commits.raw
+
+          write_section() {
+            title="$1"
+            pattern="$2"
+            awk -v title="$title" -v pattern="$pattern" '
+              BEGIN { RS = "\036"; FS = "\037"; count = 0 }
+              {
+                subject = $1; body = $2
+                gsub(/^[[:space:]]+|[[:space:]]+$/, "", subject)
+                if (subject == "" || subject ~ /^Merge /) next
+                if (subject ~ pattern) {
+                  item = subject
+                  sub(/^[a-z]+([(][^)]+[)])?!?:[[:space:]]*/, "", item)
+                  issue = ""
+                  text = subject "\n" body
+                  if (match(text, /(([Ff]ixes|[Cc]loses|[Rr]esolves|[Rr]efs)[[:space:]]+#[0-9]+)/))
+                    issue = " (" substr(text, RSTART, RLENGTH) ")"
+                  else if (match(text, /#[0-9]+/))
+                    issue = " (" substr(text, RSTART, RLENGTH) ")"
+                  lines[++count] = "- " item issue
+                }
+              }
+              END {
+                if (count > 0) {
+                  print "## " title
+                  for (i=1; i<=count; i++) print lines[i]
+                  print ""
+                }
+              }' commits.raw
+          }
+
+          # 生成仅包含 APK 的发布说明
+          {
+            echo "# Release ${TAG}"
+            echo ""
+            write_section "新功能" "^feat"
+            write_section "问题修复" "^fix"
+            write_section "优化调整" "^(perf|refactor|docs)"
+
+            echo "## 📦 SDK 25.12 · APK 包"
+            echo "| 架构 | quickfile | luci-app-quickfile | luci-i18n-quickfile-zh-cn |"
+            echo "| :--- | :--- | :--- | :--- |"
+
+            # Luci 包为 all 架构，所有架构共用同一文件
+            luci_pkg=$(ls dist/luci-app-quickfile*_all.apk 2>/dev/null | head -1)
+            luci_link="—"
+            [ -n "$luci_pkg" ] && luci_link="[$(basename $luci_pkg)](${BASE}/$(basename $luci_pkg))"
+
+            i18n_pkg=$(ls dist/luci-i18n-quickfile-zh-cn*_all.apk 2>/dev/null | head -1)
+            i18n_link="—"
+            [ -n "$i18n_pkg" ] && i18n_link="[$(basename $i18n_pkg)](${BASE}/$(basename $i18n_pkg))"
+
+            for arch in $ARCHS; do
+              # quickfile 包名包含架构信息，如 quickfile_1.0.0-1_aarch64_cortex-a53.apk
+              qf_pkg=$(ls dist/quickfile*_${arch}.apk 2>/dev/null | head -1)
+              qf_link="—"
+              [ -n "$qf_pkg" ] && qf_link="[$(basename $qf_pkg)](${BASE}/$(basename $qf_pkg))"
+
+              echo "| \`${arch}\` | ${qf_link} | ${luci_link} | ${i18n_link} |"
+            done
+          } > release_notes.md
+
+          cat release_notes.md
+
+      - name: Delete old release (keep git tag optional)
+        if: ${{ github.event_name == 'workflow_dispatch' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.meta.outputs.tag }}
+          REPO: ${{ github.repository }}
+        run: |
+          if gh release view "$TAG" -R "$REPO" >/dev/null 2>&1; then
+            gh release delete "$TAG" -R "$REPO" --yes --cleanup-tag
+          fi
+
+      - name: Publish Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.meta.outputs.tag }}
+          name: Release ${{ steps.meta.outputs.tag }}
+          body_path: release_notes.md
+          prerelease: ${{ steps.meta.outputs.prerelease }}
+          files: dist/**
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
