@@ -44,12 +44,13 @@ service nginx restart
 
 https://github.com/sbwml/luci-app-quickfile/blob/5d863b91bc1d555dea65ecce6e30786c7d12273e/quickfile/files/quickfile.locations#L1-L8
 
-⚠️推荐的卸载方法
+**⚠️推荐的卸载方法**
 所有主机的卸载通用脚本，用于卸载quickfile和web页无法访问时恢复原样
 可以执行卸载脚本。uninstall.run因为有些nginx的配置需要恢复因此，用脚本更稳就好。istoreos用户也在商店上传这个运行进行卸载。其他openwrt执行如下脚本即可安全卸载。
-
-**wget -O uninstall.run https://github.com/wkccd/quickfile/releases/download/v2026.05.18/uninstall.run
-sh uninstall.run**
+```sh
+wget -O uninstall.run https://github.com/wkccd/quickfile/releases/download/v2026.05.18/uninstall.run
+sh uninstall.run
+```
 ---
 
 ## 功能简介
