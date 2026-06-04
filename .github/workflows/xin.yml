@@ -24,11 +24,15 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
+      # 修复gh-action-sdk chown exit code=2 权限问题
+      - name: Fix workspace permission
+        run: sudo chown -R runner:runner $GITHUB_WORKSPACE
+
       - name: Build packages
-        uses: openwrt/gh-action-sdk@main
+        uses: openwrt/gh-action-sdk@v2
         env:
-          ARCH: ${{ matrix.arch }}-openwrt-${{ matrix.sdk }}
-          # 修复1：补齐汉化包，三套件同步编译
+          # 25.12=APK只填纯架构，24.10=IPK沿用-openwrt-版本
+          ARCH: ${{ matrix.sdk == '25.12' ? matrix.arch : format('{0}-openwrt-{1}',matrix.arch,matrix.sdk) }}
           FEEDNAME: quickfile
           PACKAGES: quickfile luci-app-quickfile luci-i18n-quickfile-zh-cn
           NO_REFRESH_CHECK: true
@@ -39,7 +43,7 @@ jobs:
           ARCH="${{ matrix.arch }}"
           mkdir -p dist/release dist/feed
 
-          # IPK：release 替换~为. 保留原名
+          # IPK：替换~符号，release/feed同名
           for f in bin/packages/${ARCH}/quickfile/*.ipk; do
             [ -f "$f" ] || continue
             [[ "$(basename $f)" == Packages* ]] && continue
@@ -49,18 +53,17 @@ jobs:
             cp -v "$f" dist/feed/
           done
 
-          # 修复2：APK【不再手动追加-${ARCH}后缀】，使用原生包名，和feed完全一致
+          # APK：取消手动追加-${ARCH}后缀，使用原生包名（修复安装配置错乱uci报错）
           for f in bin/packages/${ARCH}/quickfile/*.apk; do
             [ -f "$f" ] || continue
             [[ "$(basename $f)" == Packages* ]] && continue
             base=$(basename "$f" .apk)
             safe="${base//\~/.}"
-            # 取消：cp -v "$f" "dist/release/${safe}-${ARCH}.apk"
             cp -v "$f" "dist/release/${safe}.apk"
             cp -v "$f" "dist/feed/${safe}.apk"
           done
 
-          # Feed 索引（Packages/APKINDEX）
+          # 复制feed索引文件
           for f in bin/packages/${ARCH}/quickfile/Packages* bin/packages/${ARCH}/quickfile/APKINDEX*; do
             [ -f "$f" ] || continue
             cp -v "$f" dist/feed/
@@ -188,7 +191,6 @@ jobs:
             echo "| 架构 | quickfile | luci-app-quickfile | luci-i18n-quickfile-zh-cn |"
             echo "| :--- | :--- | :--- | :--- |"
             for arch in $ARCHS; do
-              # 修复：APK不再带自定义后缀，匹配原生文件名
               f_core=$(ls dist/quickfile_*_${arch}.apk 2>/dev/null | head -1)
               f_luci=$(ls dist/luci-app-quickfile_*_${arch}.apk 2>/dev/null | head -1)
               f_i18n=$(ls dist/luci-i18n-quickfile-zh-cn_*_${arch}.apk 2>/dev/null | head -1)
