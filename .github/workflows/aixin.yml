@@ -24,66 +24,47 @@ jobs:
           - aarch64_generic
           - x86_64
         sdk:
-          - "25.12"
-          - "24.10"
+          - "25.12"  # 🧠 修改点 1：只保留 25.12 版本，不再编译 24.10
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
-      # 修复gh-action-sdk chown exit code=2 权限问题
+      # 提前修复可能存在的工作区权限冲突
       - name: Fix workspace permission
         run: sudo chown -R runner:runner $GITHUB_WORKSPACE
 
       - name: Build packages
-        uses: openwrt/gh-action-sdk@v2
+        uses: openwrt/gh-action-sdk@main
         env:
-          # 修复点：将 ? : 替换为 && ||，解决了 YAML 解析错误与 GitHub Actions 语法错误
-          ARCH: ${{ matrix.sdk == '25.12' && matrix.arch || format('{0}-openwrt-{1}', matrix.arch, matrix.sdk) }}
+          ARCH: ${{ matrix.arch }}-openwrt-${{ matrix.sdk }}
           FEEDNAME: quickfile
-          PACKAGES: quickfile luci-app-quickfile luci-i18n-quickfile-zh-cn
+          PACKAGES: quickfile luci-app-quickfile
           NO_REFRESH_CHECK: true
           INDEX: 1
 
       - name: Collect packages
         run: |
           ARCH="${{ matrix.arch }}"
-          SDK="${{ matrix.sdk }}"
           mkdir -p dist/release dist/feed
 
-          # 针对 SDK 24.10 (IPK)
-          if [ "$SDK" = "24.10" ]; then
-            for f in bin/packages/${ARCH}/quickfile/*.ipk; do
-              [ -f "$f" ] || continue
-              [[ "$(basename $f)" == Packages* ]] && continue
-              base=$(basename "$f" .ipk)
-              safe="${base//\~/.}"
-              cp -v "$f" "dist/release/${safe}.ipk"
-              cp -v "$f" dist/feed/
-            done
-            for f in bin/packages/${ARCH}/quickfile/Packages*; do
-              [ -f "$f" ] || continue
-              cp -v "$f" dist/feed/
-            done
-          fi
+          # 🧠 修改点 2：只保留 APK 的收集逻辑，彻底移除 IPK 逻辑
+          for f in bin/packages/${ARCH}/quickfile/*.apk; do
+            [ -f "$f" ] || continue
+            [[ "$(basename $f)" == APKINDEX* ]] && continue
+            base=$(basename "$f" .apk)
+            safe="${base//\~/.}"
+            cp -v "$f" "dist/release/${safe}.apk"
+            cp -v "$f" "dist/feed/${safe}.apk"
+          done
 
-          # 针对 SDK 25.12 (APK)
-          if [ "$SDK" = "25.12" ]; then
-            for f in bin/packages/${ARCH}/quickfile/*.apk; do
-              [ -f "$f" ] || continue
-              [[ "$(basename $f)" == APKINDEX* ]] && continue
-              base=$(basename "$f" .apk)
-              safe="${base//\~/.}"
-              cp -v "$f" "dist/release/${safe}_${ARCH}.apk"
-              cp -v "$f" "dist/feed/${safe}.apk"
-            done
-            for f in bin/packages/${ARCH}/quickfile/APKINDEX*; do
-              [ -f "$f" ] || continue
-              cp -v "$f" dist/feed/
-            done
-          fi
+          # Feed 索引（仅保留 APKINDEX）
+          for f in bin/packages/${ARCH}/quickfile/APKINDEX*; do
+            [ -f "$f" ] || continue
+            cp -v "$f" dist/feed/
+          done
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: packages-sdk${{ matrix.sdk }}-${{ matrix.arch }}
           path: dist/
@@ -97,12 +78,12 @@ jobs:
       contents: write
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           fetch-depth: 0
 
       - name: Download artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v6
         with:
           path: all-artifacts
           pattern: packages-*
@@ -130,32 +111,68 @@ jobs:
         run: |
           BASE="https://github.com/${REPO}/releases/download/${TAG}"
           ARCHS="aarch64_cortex-a53 aarch64_generic x86_64"
+          PREVIOUS_TAG="$(git tag --sort=-creatordate | grep '^v' | grep -v "^${TAG}$" | head -1 || true)"
+
+          if [ -n "$PREVIOUS_TAG" ]; then
+            RANGE="${PREVIOUS_TAG}..HEAD"
+          else
+            RANGE="HEAD"
+          fi
+
+          git log --format='%s%x1f%b%x1e' "$RANGE" > commits.raw
+
+          write_section() {
+            title="$1"
+            pattern="$2"
+            awk -v title="$title" -v pattern="$pattern" '
+              BEGIN {
+                RS = "\036"
+                FS = "\037"
+                count = 0
+              }
+              {
+                subject = $1
+                body = $2
+                gsub(/^[[:space:]]+|[[:space:]]+$/, "", subject)
+                if (subject == "" || subject ~ /^Merge /) {
+                  next
+                }
+                if (subject ~ pattern) {
+                  item = subject
+                  sub(/^[a-z]+([(][^)]+[)])?!?:[[:space:]]*/, "", item)
+                  issue = ""
+                  text = subject "\n" body
+                  if (match(text, /(([Ff]ixes|[Cc]loses|[Rr]esolves|[Rr]efs)[[:space:]]+#[0-9]+)/)) {
+                    issue = " (" substr(text, RSTART, RLENGTH) ")"
+                  } else if (match(text, /#[0-9]+/)) {
+                    issue = " (" substr(text, RSTART, RLENGTH) ")"
+                  }
+                  lines[++count] = "- " item issue
+                }
+              }
+              END {
+                if (count > 0) {
+                  print "## " title
+                  print ""
+                  for (i = 1; i <= count; i++) {
+                    print lines[i]
+                  }
+                  print ""
+                }
+              }
+            ' commits.raw
+          }
 
           {
-            echo "## 📦 SDK 24.10 · (IPK)"
-            echo ""
-            echo "| 架构 | quickfile | luci-app-quickfile | luci-i18n-quickfile-zh-cn |"
-            echo "| :--- | :--- | :--- | :--- |"
-            luci_ipk=$(ls dist/luci-app-quickfile_*_all.ipk 2>/dev/null | head -1)
-            luci_ipk_link=$( [ -n "$luci_ipk" ] && echo "[$(basename $luci_ipk)](${BASE}/$(basename $luci_ipk))" || echo "—" )
-            luci_i18n_ipk=$(ls dist/luci-i18n-quickfile-zh-cn_*_all.ipk 2>/dev/null | head -1)
-            luci_i18n_link=$( [ -n "$luci_i18n_ipk" ] && echo "[$(basename $luci_i18n_ipk)](${BASE}/$(basename $luci_i18n_ipk))" || echo "—" )
-
-            for arch in $ARCHS; do
-              f=$(ls dist/quickfile_*_${arch}.ipk 2>/dev/null | head -1)
-              link=$( [ -n "$f" ] && echo "[$(basename $f)](${BASE}/$(basename $f))" || echo "—" )
-              echo "| \`${arch}\` | ${link} | ${luci_ipk_link} | ${luci_i18n_link} |"
-            done
-
-            echo ""
+            # 🧠 修改点 3：删除了整个 SDK 24.10 (IPK) 表格生成逻辑，只保留 25.12 (APK)
             echo "## 📦 SDK 25.12 · (APK)"
             echo ""
             echo "| 架构 | quickfile | luci-app-quickfile | luci-i18n-quickfile-zh-cn |"
             echo "| :--- | :--- | :--- | :--- |"
             for arch in $ARCHS; do
               f_core=$(ls dist/quickfile_*_${arch}.apk 2>/dev/null | head -1)
-              f_luci=$(ls dist/luci-app-quickfile_*_${arch}.apk 2>/dev/null | head -1)
-              f_i18n=$(ls dist/luci-i18n-quickfile-zh-cn_*_${arch}.apk 2>/dev/null | head -1)
+              f_luci=$(ls dist/luci-app-quickfile_*_all.apk dist/luci-app-quickfile_*_${arch}.apk 2>/dev/null | head -1)
+              f_i18n=$(ls dist/luci-i18n-quickfile-zh-cn_*_all.apk dist/luci-i18n-quickfile-zh-cn_*_${arch}.apk 2>/dev/null | head -1)
               link_core=$( [ -n "$f_core" ] && echo "[$(basename $f_core)](${BASE}/$(basename $f_core))" || echo "—" )
               link_luci=$( [ -n "$f_luci" ] && echo "[$(basename $f_luci)](${BASE}/$(basename $f_luci))" || echo "—" )
               link_i18n=$( [ -n "$f_i18n" ] && echo "[$(basename $f_i18n)](${BASE}/$(basename $f_i18n))" || echo "—" )
